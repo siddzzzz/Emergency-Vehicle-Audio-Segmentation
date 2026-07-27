@@ -17,6 +17,7 @@ from src.data_generator import (
 )
 from src.dataset import AudioProcessor
 from src.model import SpectrogramUNet
+from src.detector import SlidingWindowDetector
 
 # Relative directory paths
 BASE_DIR = Path(__file__).resolve().parent
@@ -42,59 +43,96 @@ if CKPT_PATH.exists():
 else:
     print("Notice: No trained checkpoint found yet. Running with default initialized model.")
 
+# Initialize Sliding Window Detector
+detector = SlidingWindowDetector(model, processor, window_sec=4.0, hop_sec=0.5, sample_rate=SAMPLE_RATE)
 
-def plot_spectrograms_and_mask(mix_mag, mask, siren_pred_mag, clean_siren_mag=None):
-    """
-    Generates Matplotlib figure comparing:
-    1. Mixed Traffic + Siren Spectrogram
-    2. Predicted U-Net Ratio Mask M in [0, 1]
-    3. Extracted Emergency Siren Spectrogram
-    4. Ground Truth Siren Spectrogram (if available)
-    """
-    num_plots = 4 if clean_siren_mag is not None else 3
-    fig, axes = plt.subplots(1, num_plots, figsize=(16, 4.2), dpi=120)
 
+def plot_detection_dashboard(mix_wave_np, time_points, confidence_curve, detected_intervals, mix_mag, mask, siren_pred_mag, clean_siren_mag=None):
+    """
+    Generates a 5-Subplot Visualizer Dashboard:
+    1. 1D Mixed Waveform Timeline with Red Highlighted Emergency Siren Intervals
+    2. Real-Time Siren Detection Confidence Curve (0% to 100%)
+    3. Mixed Input Spectrogram
+    4. Predicted U-Net Ratio Mask M(f, t)
+    5. Extracted Siren Spectrogram
+    """
+    fig = plt.figure(figsize=(16, 9), dpi=120)
+    gs = fig.add_gridspec(2, 4, height_ratios=[1, 1.2])
+
+    t_axis = np.linspace(0, len(mix_wave_np) / SAMPLE_RATE, len(mix_wave_np))
+
+    # --- Subplot 1: 1D Mixed Audio Waveform Timeline & Detection Highlights ---
+    ax_wave = fig.add_subplot(gs[0, :2])
+    ax_wave.plot(t_axis, mix_wave_np, color="#4b5563", alpha=0.7, label="Traffic + Siren Audio")
+    
+    for start_t, end_t in detected_intervals:
+        ax_wave.axvspan(start_t, end_t, color="#ef4444", alpha=0.3, label="Siren Detected (Active)" if start_t == detected_intervals[0][0] else "")
+    
+    ax_wave.set_title("1. Mixed Traffic Audio Waveform (10s Timeline)", fontsize=11, fontweight="bold")
+    ax_wave.set_xlabel("Time (seconds)")
+    ax_wave.set_ylabel("Amplitude")
+    ax_wave.set_xlim(0, len(mix_wave_np) / SAMPLE_RATE)
+    ax_wave.grid(True, linestyle="--", alpha=0.5)
+    ax_wave.legend(loc="upper right")
+
+    # --- Subplot 2: Real-Time Siren Confidence / Detection Score Curve ---
+    ax_conf = fig.add_subplot(gs[0, 2:])
+    ax_conf.plot(time_points, confidence_curve, color="#dc2626", linewidth=2.5, marker="o", markersize=4, label="Siren Detection Score")
+    ax_conf.axhline(detector.detection_threshold * 100.0, color="#f59e0b", linestyle="--", linewidth=1.5, label="Detection Threshold (18%)")
+    
+    ax_conf.set_title("2. Real-Time Siren Detection Confidence Score (%)", fontsize=11, fontweight="bold")
+    ax_conf.set_xlabel("Time (seconds)")
+    ax_conf.set_ylabel("Confidence (%)")
+    ax_conf.set_ylim(0, 100)
+    ax_conf.set_xlim(0, len(mix_wave_np) / SAMPLE_RATE)
+    ax_conf.grid(True, linestyle="--", alpha=0.5)
+    ax_conf.legend(loc="upper right")
+
+    # --- Subplots 3, 4, 5: Spectrograms & Learned Ratio Mask ---
     eps = 1e-6
     mix_db = 20 * np.log10(mix_mag + eps)
     pred_db = 20 * np.log10(siren_pred_mag + eps)
 
-    # 1. Mixed Input Spectrogram
-    im0 = axes[0].imshow(mix_db, aspect="auto", origin="lower", cmap="inferno")
-    axes[0].set_title("1. Mixed Input (Traffic + Siren)", fontsize=11, fontweight="bold")
-    axes[0].set_xlabel("Time Frames")
-    axes[0].set_ylabel("Frequency Bins")
-    fig.colorbar(im0, ax=axes[0], format="%+2.0f dB")
+    # 3. Mixed Spectrogram
+    ax_spec1 = fig.add_subplot(gs[1, 0])
+    im0 = ax_spec1.imshow(mix_db, aspect="auto", origin="lower", cmap="inferno")
+    ax_spec1.set_title("3. Mixed Input Spectrogram", fontsize=10, fontweight="bold")
+    ax_spec1.set_xlabel("Time Frames")
+    ax_spec1.set_ylabel("Frequency Bins")
+    fig.colorbar(im0, ax=ax_spec1, format="%+2.0f dB")
 
-    # 2. Predicted Ratio Mask M(f, t)
-    im1 = axes[1].imshow(mask, aspect="auto", origin="lower", cmap="viridis", vmin=0.0, vmax=1.0)
-    axes[1].set_title("2. Predicted Ratio Mask M(f,t)", fontsize=11, fontweight="bold")
-    axes[1].set_xlabel("Time Frames")
-    axes[1].set_ylabel("Frequency Bins")
-    cbar1 = fig.colorbar(im1, ax=axes[1])
-    cbar1.set_label("Mask Value (0=Noise, 1=Siren)", fontsize=9)
+    # 4. Predicted Ratio Mask M(f,t)
+    ax_mask = fig.add_subplot(gs[1, 1])
+    im1 = ax_mask.imshow(mask, aspect="auto", origin="lower", cmap="viridis", vmin=0.0, vmax=1.0)
+    ax_mask.set_title("4. Predicted Ratio Mask M(f,t)", fontsize=10, fontweight="bold")
+    ax_mask.set_xlabel("Time Frames")
+    ax_mask.set_ylabel("Frequency Bins")
+    cbar1 = fig.colorbar(im1, ax=ax_mask)
+    cbar1.set_label("Mask Value (0=Noise, 1=Siren)", fontsize=8)
 
-    # 3. Extracted Siren Spectrogram
-    im2 = axes[2].imshow(pred_db, aspect="auto", origin="lower", cmap="inferno")
-    axes[2].set_title("3. Extracted Siren (Model Output)", fontsize=11, fontweight="bold")
-    axes[2].set_xlabel("Time Frames")
-    axes[2].set_ylabel("Frequency Bins")
-    fig.colorbar(im2, ax=axes[2], format="%+2.0f dB")
+    # 5. Extracted Siren Spectrogram
+    ax_spec2 = fig.add_subplot(gs[1, 2])
+    im2 = ax_spec2.imshow(pred_db, aspect="auto", origin="lower", cmap="inferno")
+    ax_spec2.set_title("5. Extracted Siren Spectrogram", fontsize=10, fontweight="bold")
+    ax_spec2.set_xlabel("Time Frames")
+    ax_spec2.set_ylabel("Frequency Bins")
+    fig.colorbar(im2, ax=ax_spec2, format="%+2.0f dB")
 
-    # 4. Ground Truth Siren Spectrogram (if synthetic)
+    # 6. Ground Truth Siren Spectrogram (if available)
     if clean_siren_mag is not None:
+        ax_spec3 = fig.add_subplot(gs[1, 3])
         gt_db = 20 * np.log10(clean_siren_mag + eps)
-        im3 = axes[3].imshow(gt_db, aspect="auto", origin="lower", cmap="inferno")
-        axes[3].set_title("4. Ground Truth Siren", fontsize=11, fontweight="bold")
-        axes[3].set_xlabel("Time Frames")
-        axes[3].set_ylabel("Frequency Bins")
-        fig.colorbar(im3, ax=axes[3], format="%+2.0f dB")
+        im3 = ax_spec3.imshow(gt_db, aspect="auto", origin="lower", cmap="inferno")
+        ax_spec3.set_title("6. Ground Truth Siren Spectrogram", fontsize=10, fontweight="bold")
+        ax_spec3.set_xlabel("Time Frames")
+        ax_spec3.set_ylabel("Frequency Bins")
+        fig.colorbar(im3, ax=ax_spec3, format="%+2.0f dB")
 
     plt.tight_layout()
     return fig
 
 
 def safe_extract_filepath(file_obj):
-    """Safely extracts filepath string from Gradio file input across different versions."""
     if file_obj is None:
         return None
     if isinstance(file_obj, str):
@@ -106,12 +144,15 @@ def safe_extract_filepath(file_obj):
     return str(file_obj)
 
 
-def process_audio_separation(siren_type, noise_type, snr_db, custom_audio_file=None):
+def process_audio_separation_and_detection(siren_type, noise_type, snr_db, start_sec, end_sec, custom_audio_file=None):
     """
-    Gradio Event Handler: Performs dynamic audio mixing, STFT processing,
-    ratio-mask inference, and outputs 4 audio tracks + spectrogram comparison plot.
+    Gradio Event Handler:
+    1. Generates 10-second continuous background traffic noise.
+    2. Overlays emergency siren burst starting at `start_sec` and ending at `end_sec`.
+    3. Runs Sliding Window AI Detector to compute real-time confidence scores and traffic priority override signals.
+    4. Reconstructs full 10-second extracted emergency siren waveform.
     """
-    duration = 4.0
+    duration = 10.0
     num_samples = int(SAMPLE_RATE * duration)
     custom_path = safe_extract_filepath(custom_audio_file)
 
@@ -119,7 +160,6 @@ def process_audio_separation(siren_type, noise_type, snr_db, custom_audio_file=N
     traffic_wave = None
 
     if custom_path and os.path.exists(custom_path):
-        # Load user custom WAV file
         sr, audio_np = wavfile.read(custom_path)
         if audio_np.dtype == np.int16:
             audio_np = audio_np.astype(np.float32) / 32768.0
@@ -131,7 +171,6 @@ def process_audio_separation(siren_type, noise_type, snr_db, custom_audio_file=N
         if audio_np.ndim > 1:
             audio_np = audio_np.mean(axis=1)
 
-        # Pad or crop to exact 4 seconds
         if len(audio_np) < num_samples:
             audio_np = np.pad(audio_np, (0, num_samples - len(audio_np)))
         else:
@@ -139,14 +178,15 @@ def process_audio_separation(siren_type, noise_type, snr_db, custom_audio_file=N
 
         mix_wave = torch.tensor(audio_np, dtype=torch.float32)
     else:
-        # Synthesize selected Siren & Traffic
+        # Generate 10-second siren burst
         if siren_type == "Wail (Ambulance)":
-            siren_np = generate_siren_wail(duration_sec=duration, sample_rate=SAMPLE_RATE)
+            siren_np = generate_siren_wail(duration_sec=duration, sample_rate=SAMPLE_RATE, start_sec=start_sec, end_sec=end_sec)
         elif siren_type == "Yelp (Police)":
-            siren_np = generate_siren_yelp(duration_sec=duration, sample_rate=SAMPLE_RATE)
+            siren_np = generate_siren_yelp(duration_sec=duration, sample_rate=SAMPLE_RATE, start_sec=start_sec, end_sec=end_sec)
         else:
-            siren_np = generate_siren_hilo(duration_sec=duration, sample_rate=SAMPLE_RATE)
+            siren_np = generate_siren_hilo(duration_sec=duration, sample_rate=SAMPLE_RATE, start_sec=start_sec, end_sec=end_sec)
 
+        # Generate 10-second background traffic noise
         traffic_np = generate_traffic_noise(
             duration_sec=duration,
             sample_rate=SAMPLE_RATE,
@@ -173,27 +213,23 @@ def process_audio_separation(siren_type, noise_type, snr_db, custom_audio_file=N
             clean_siren_wave = clean_siren_wave / max_val
             traffic_wave = traffic_wave / max_val
 
-    # Model Spectrogram STFT Inference
-    mix_mag, mix_phase = processor.stft(mix_wave)  # shape (1, 257, 401)
-    mix_mag_input = mix_mag.unsqueeze(0).to(device)  # shape (1, 1, 257, 401)
+    # Real-Time Sliding Window Detector & Overlap-Add Separation Engine
+    detection_res = detector.process_stream(mix_wave, device=device)
+    
+    full_est_siren_wave = detection_res["full_separated_wave"]
+    time_points = detection_res["time_points"]
+    confidence_curve = detection_res["confidence_curve"]
+    detected_intervals = detection_res["detected_intervals"]
+    traffic_action_msg = detection_res["traffic_action"]
 
-    with torch.no_grad():
-        mask_tensor, pred_mag_tensor = model(mix_mag_input)
-
-    mask_np = mask_tensor.squeeze().cpu().numpy()  # shape (257, 401)
-    pred_mag_np = pred_mag_tensor.squeeze().cpu().numpy()  # shape (257, 401)
-    mix_mag_np = mix_mag.squeeze().cpu().numpy()  # shape (257, 401)
-
-    # Reconstruct time-domain audio waveforms using iSTFT
-    est_siren_wave = processor.istft(pred_mag_tensor.squeeze(0).cpu(), mix_phase)
-    est_siren_np = est_siren_wave.cpu().numpy()
     mix_np = mix_wave.cpu().numpy()
+    est_siren_np = full_est_siren_wave.cpu().numpy()
 
-    # Save audio files for Gradio components
-    mix_file = str(TEMP_DIR / "mixed_input.wav")
-    est_file = str(TEMP_DIR / "extracted_siren.wav")
-    gt_siren_file = str(TEMP_DIR / "ground_truth_siren.wav")
-    traffic_file = str(TEMP_DIR / "traffic_noise.wav")
+    # Save 10-second audio files for Gradio components
+    mix_file = str(TEMP_DIR / "mixed_input_10s.wav")
+    est_file = str(TEMP_DIR / "extracted_siren_10s.wav")
+    gt_siren_file = str(TEMP_DIR / "ground_truth_siren_10s.wav")
+    traffic_file = str(TEMP_DIR / "traffic_noise_10s.wav")
 
     wavfile.write(mix_file, SAMPLE_RATE, (mix_np * 32767).astype(np.int16))
     wavfile.write(est_file, SAMPLE_RATE, (np.clip(est_siren_np, -1.0, 1.0) * 32767).astype(np.int16))
@@ -203,21 +239,34 @@ def process_audio_separation(siren_type, noise_type, snr_db, custom_audio_file=N
         wavfile.write(gt_siren_file, SAMPLE_RATE, (clean_siren_wave.numpy() * 32767).astype(np.int16))
         wavfile.write(traffic_file, SAMPLE_RATE, (traffic_wave.numpy() * 32767).astype(np.int16))
         clean_mag, _ = processor.stft(clean_siren_wave)
-        clean_siren_mag_np = clean_mag.squeeze().cpu().numpy()  # shape (257, 401)
+        clean_siren_mag_np = clean_mag.squeeze().cpu().numpy()
     else:
         gt_siren_file = None
         traffic_file = None
 
-    fig = plot_spectrograms_and_mask(
+    # STFT Spectrogram & Mask matrices for plotting
+    mix_mag, _ = processor.stft(mix_wave)
+    mix_mag_input = mix_mag.unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        mask_tensor, pred_mag_tensor = model(mix_mag_input)
+
+    mask_np = mask_tensor.squeeze().cpu().numpy()
+    pred_mag_np = pred_mag_tensor.squeeze().cpu().numpy()
+    mix_mag_np = mix_mag.squeeze().cpu().numpy()
+
+    fig = plot_detection_dashboard(
+        mix_np,
+        time_points,
+        confidence_curve,
+        detected_intervals,
         mix_mag_np,
         mask_np,
         pred_mag_np,
         clean_siren_mag_np
     )
 
-    status_msg = f"**Audio Separation Complete!** (SNR: `{snr_db:+.1f} dB` | Sample Rate: `{SAMPLE_RATE} Hz` | Device: `{device.upper()}`)"
-
-    return mix_file, est_file, gt_siren_file, traffic_file, fig, status_msg
+    return mix_file, est_file, gt_siren_file, traffic_file, fig, traffic_action_msg
 
 
 def launch_app():
@@ -228,28 +277,28 @@ def launch_app():
         return
 
     custom_css = """
-    .main-container { max-width: 1280px; margin: 0 auto; }
-    .card-box { border: 1px solid #374151; border-radius: 8px; padding: 16px; background-color: #1f2937; }
-    .btn-primary { background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%) !important; color: white !important; font-weight: bold !important; }
+    .main-container { max-width: 1380px; margin: 0 auto; }
+    .btn-primary { background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%) !important; color: white !important; font-weight: bold !important; font-size: 16px !important; }
+    .traffic-box { border: 2px solid #ef4444; border-radius: 8px; padding: 16px; background-color: #111827; }
     """
 
     theme = gr.themes.Soft(primary_hue="red", secondary_hue="slate")
-    with gr.Blocks(theme=theme, css=custom_css, title="Emergency Vehicle Audio Separation") as demo:
+    with gr.Blocks(theme=theme, css=custom_css, title="Emergency Vehicle Audio Detection & Separation") as demo:
         gr.Markdown(
             """
-            # 🚨 Emergency Vehicle Audio Segmentation & Source Separation
-            *Isolate emergency sirens (Ambulance, Police, Firetruck) from heavy traffic noise using a 2D Spectrogram U-Net.*
+            # 🚨 Emergency Vehicle Real-Time Audio Detection & Source Separation
+            *Detect emergency vehicle sirens (Ambulance, Police, Firetruck) mid-stream in heavy traffic and isolate the siren track using a 2D Spectrogram U-Net.*
             """
         )
 
-        with gr.Tab("🎧 Interactive Audio Separator"):
+        with gr.Tab("🚦 Real-Time Traffic Detector & Separator"):
             with gr.Row():
                 with gr.Column(scale=1):
-                    gr.Markdown("### 🎛️ 1. Audio Mixture Controls")
+                    gr.Markdown("### 🎛️ 1. Audio Stream & Siren Burst Controls")
                     siren_type = gr.Dropdown(
                         choices=["Wail (Ambulance)", "Yelp (Police)", "Hi-Lo (Firetruck)"],
                         value="Wail (Ambulance)",
-                        label="Emergency Siren Sound"
+                        label="Emergency Siren Sound Type"
                     )
                     noise_type = gr.Dropdown(
                         choices=["Heavy Traffic Rumble", "Traffic + Horns"],
@@ -264,42 +313,62 @@ def launch_app():
                         label="Signal-to-Noise Ratio (SNR in dB)",
                         info="Lower dB = Traffic is louder than siren"
                     )
+                    
+                    gr.Markdown("#### ⏱️ Siren Active Burst Window (Middle of 10s Stream)")
+                    siren_start_slider = gr.Slider(
+                        minimum=0.0,
+                        maximum=6.0,
+                        value=3.0,
+                        step=0.5,
+                        label="Siren Start Time (Seconds)",
+                        info="Time when ambulance turns on its siren"
+                    )
+                    siren_end_slider = gr.Slider(
+                        minimum=4.0,
+                        maximum=10.0,
+                        value=7.0,
+                        step=0.5,
+                        label="Siren End Time (Seconds)",
+                        info="Time when ambulance turns off siren"
+                    )
+
                     custom_file = gr.File(
-                        label="Or Upload Custom Traffic+Siren Audio (.wav)",
+                        label="Or Upload Custom 10s Traffic+Siren Audio (.wav)",
                         file_types=[".wav"]
                     )
-                    separate_btn = gr.Button("⚡ Separate Emergency Siren", variant="primary", elem_classes=["btn-primary"])
+                    separate_btn = gr.Button("⚡ Detect Siren & Separate Audio (10s)", variant="primary", elem_classes=["btn-primary"])
 
                 with gr.Column(scale=2):
-                    gr.Markdown("### 📊 2. Visual Spectrogram & Ratio Mask Output")
-                    status_banner = gr.Markdown("Click **Separate Emergency Siren** to run separation.")
-                    spec_plot = gr.Plot(label="STFT Spectrogram & Mask Comparison")
+                    gr.Markdown("### 🚦 2. Traffic Light Controller & Detection Status")
+                    status_banner = gr.Markdown("Click **Detect Siren & Separate Audio** to analyze traffic stream.")
+                    spec_plot = gr.Plot(label="Real-Time Detection Timeline & Spectrogram Dashboard")
 
-            gr.Markdown("### 🔊 3. Audio Track Playback & Comparisons")
+            gr.Markdown("### 🔊 3. Full 10-Second Audio Track Playback")
             with gr.Row():
-                audio_mix = gr.Audio(label="1. Mixed Input (Traffic + Siren)", type="filepath")
+                audio_mix = gr.Audio(label="1. Mixed Input (Traffic + Siren Burst)", type="filepath")
                 audio_separated = gr.Audio(label="2. Extracted Siren (Model Output)", type="filepath")
                 audio_gt_siren = gr.Audio(label="3. Clean Ground-Truth Siren", type="filepath")
-                audio_traffic = gr.Audio(label="4. Background Traffic Noise", type="filepath")
+                audio_traffic = gr.Audio(label="4. Continuous Background Traffic", type="filepath")
 
             separate_btn.click(
-                fn=process_audio_separation,
-                inputs=[siren_type, noise_type, snr_slider, custom_file],
+                fn=process_audio_separation_and_detection,
+                inputs=[siren_type, noise_type, snr_slider, siren_start_slider, siren_end_slider, custom_file],
                 outputs=[audio_mix, audio_separated, audio_gt_siren, audio_traffic, spec_plot, status_banner]
             )
 
-        with gr.Tab("📘 Architecture & Learning Guide"):
+        with gr.Tab("📘 System Architecture & Real-Time Detection Guide"):
             gr.Markdown(
                 """
-                ### How Audio Source Separation Works:
-                1. **Short-Time Fourier Transform (STFT)**: Converts 1D raw waveform $x(t)$ into a 2D Time-Frequency Spectrogram matrix $|X_{\\text{mix}}|$ & Phase $\\theta$.
-                2. **2D Spectrogram U-Net**: Downsamples the spectrogram through 2D Convolutional Encoder layers, then upsamples back to predict a 2D **Ratio Mask** $M(f,t) \\in [0, 1]$.
-                3. **Spectrogram Masking**: Calculates estimated siren spectrum $\\hat{|S|} = M \\odot |X_{\\text{mix}}|$.
-                4. **iSTFT Waveform Reconstruction**: Applies Inverse STFT combining $\\hat{|S|}$ with phase $\\theta$ to produce the isolated time-domain emergency siren sound.
+                ### Real-Time Emergency Vehicle Traffic Signal System Architecture:
+                1. **10-Second Audio Streaming**: Background traffic plays continuously. Emergency vehicle siren turns on mid-stream (e.g. 3.0s to 7.0s).
+                2. **Sliding Window Detection Engine**: A 4.0-second sliding window with 0.5-second hop steps scans the stream in real time.
+                3. **Siren Confidence Scoring**: Computes siren energy ratio per window step $C(t) = \\frac{\\|\\hat{|S|}_t\\|_F}{\\||X_{\\text{mix}}|_t\\|_F}$.
+                4. **Traffic Light Priority Signal Override**: If confidence exceeds 18%, the system triggers an emergency override to change traffic signals to **GREEN**.
+                5. **Overlap-Add (OLA) Synthesis**: Seamlessly reconstructs full 10-second isolated siren audio without boundary click artifacts.
                 """
             )
 
-    print("Launching upgraded Gradio App...")
+    print("Launching upgraded Real-Time Detection Gradio App...")
     demo.launch(share=False)
 
 
