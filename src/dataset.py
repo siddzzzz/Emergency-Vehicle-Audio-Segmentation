@@ -68,13 +68,14 @@ class EmergencyAudioDataset(Dataset):
     """
     Dynamic Audio Dataset:
     Overlays emergency vehicle siren onto traffic noise at randomized SNR (-10dB to +10dB).
+    Supports variable audio durations (default 10.0 seconds).
     Relative paths are used by default.
     """
     def __init__(
         self,
         data_dir=None,
         sample_rate=16000,
-        duration_sec=4.0,
+        duration_sec=10.0,
         snr_range=(-10.0, 10.0),
         dataset_size=200,
         n_fft=512,
@@ -84,6 +85,7 @@ class EmergencyAudioDataset(Dataset):
         super().__init__()
         self.data_dir = Path(data_dir) if data_dir else DEFAULT_DATA_DIR
         self.sample_rate = sample_rate
+        self.duration_sec = duration_sec
         self.num_samples = int(sample_rate * duration_sec)
         self.snr_range = snr_range
         self.dataset_size = dataset_size
