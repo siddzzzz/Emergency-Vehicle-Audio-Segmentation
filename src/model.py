@@ -22,10 +22,11 @@ class ConvBlock(nn.Module):
 
 class SpectrogramUNet(nn.Module):
     """
-    Lightweight 2D Spectrogram U-Net for Emergency Vehicle Audio Separation & Source Masking.
-    Predicts an Ideal Ratio Mask M in [0, 1] applied to the Mixture Spectrogram.
+    Multi-Task 2D Spectrogram U-Net for Emergency Vehicle Audio Separation & Multi-Class Classification.
+    1. Predicts an Ideal Ratio Mask M in [0, 1] applied to the Mixture Spectrogram.
+    2. Predicts Class Logits for vehicle type (0=Traffic Only, 1=Ambulance Wail, 2=Police Yelp, 3=Firetruck Hi-Lo).
     """
-    def __init__(self, in_channels=1, out_channels=1, features=[32, 64, 128, 256]):
+    def __init__(self, in_channels=1, out_channels=1, num_classes=4, features=[32, 64, 128, 256]):
         super().__init__()
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
@@ -38,11 +39,22 @@ class SpectrogramUNet(nn.Module):
             curr_channels = feature
 
         # Bottleneck
-        self.bottleneck = ConvBlock(features[-1], features[-1] * 2)
+        bottleneck_channels = features[-1] * 2  # 512 channels
+        self.bottleneck = ConvBlock(features[-1], bottleneck_channels)
 
-        # Decoder Path
+        # Multi-Class Classifier Head (takes bottleneck features)
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(bottleneck_channels, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(128, num_classes)
+        )
+
+        # Decoder Path (Ratio Mask Decoder)
         rev_features = list(reversed(features))
-        curr_channels = features[-1] * 2
+        curr_channels = bottleneck_channels
         for feature in rev_features:
             self.decoders.append(
                 nn.ConvTranspose2d(curr_channels, feature, kernel_size=2, stride=2)
@@ -63,6 +75,7 @@ class SpectrogramUNet(nn.Module):
         Returns:
             mask: Soft ratio mask of shape (Batch, 1, Freq, Time)
             estimated_siren_mag: Masked Spectrogram (Batch, 1, Freq, Time)
+            class_logits: Vehicle class logits tensor of shape (Batch, 4)
         """
         skip_connections = []
 
@@ -73,10 +86,16 @@ class SpectrogramUNet(nn.Module):
             skip_connections.append(out)
             out = self.pool(out)
 
-        out = self.bottleneck(out)
+        bottleneck_feat = self.bottleneck(out)
+        
+        # Classification Head Prediction
+        pooled_feat = self.global_pool(bottleneck_feat)
+        class_logits = self.classifier(pooled_feat)
+
+        # Decoder loop for Ratio Mask
+        out = bottleneck_feat
         skip_connections = skip_connections[::-1]
 
-        # Decoder loop with skip connections
         for idx in range(0, len(self.decoders), 2):
             up_sample = self.decoders[idx]
             conv_block = self.decoders[idx + 1]
@@ -84,7 +103,6 @@ class SpectrogramUNet(nn.Module):
             out = up_sample(out)
             skip = skip_connections[idx // 2]
 
-            # Handle potential shape mismatches due to odd STFT dimension sizes
             if out.shape != skip.shape:
                 out = F.interpolate(out, size=skip.shape[2:], mode="bilinear", align_corners=False)
 
@@ -93,12 +111,11 @@ class SpectrogramUNet(nn.Module):
 
         mask = self.final_conv(out)
         
-        # Ensure mask matches input dimensions exactly
         if mask.shape != x.shape:
             mask = F.interpolate(mask, size=x.shape[2:], mode="bilinear", align_corners=False)
             
         estimated_siren_mag = mask * x
-        return mask, estimated_siren_mag
+        return mask, estimated_siren_mag, class_logits
 
 
 if __name__ == "__main__":
