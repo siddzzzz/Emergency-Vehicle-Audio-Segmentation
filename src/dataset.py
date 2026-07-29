@@ -130,8 +130,18 @@ class EmergencyAudioDataset(Dataset):
     def mix_audio(self, siren, traffic, snr_db):
         """
         Mixes siren and traffic noise based on target Signal-to-Noise Ratio (SNR) in dB.
+        Calculates siren power over active frames only so zero-padding doesn't distort scaling,
+        and keeps background traffic baseline constant without ducking.
         """
-        p_siren = torch.mean(siren ** 2) + 1e-8
+        # Normalize traffic to steady baseline
+        traffic = (traffic / (torch.max(torch.abs(traffic)) + 1e-6)) * 0.45
+
+        active_mask = torch.abs(siren) > 1e-4
+        if torch.any(active_mask):
+            p_siren = torch.mean(siren[active_mask] ** 2) + 1e-8
+        else:
+            p_siren = torch.mean(siren ** 2) + 1e-8
+
         p_traffic = torch.mean(traffic ** 2) + 1e-8
         
         target_siren_power = p_traffic * (10.0 ** (snr_db / 10.0))
@@ -139,11 +149,9 @@ class EmergencyAudioDataset(Dataset):
         scaled_siren = siren * scale
         
         mixture = traffic + scaled_siren
-        # Normalize to avoid clipping
-        max_val = torch.max(torch.abs(mixture))
-        if max_val > 1.0:
-            mixture = mixture / max_val
-            scaled_siren = scaled_siren / max_val
+        max_mix = torch.max(torch.abs(mixture))
+        if max_mix > 1.0:
+            mixture = torch.tanh(mixture)
             
         return mixture, scaled_siren
 

@@ -196,22 +196,28 @@ def process_audio_separation_and_detection(siren_type, noise_type, snr_db, start
         siren_tensor = torch.tensor(siren_np, dtype=torch.float32)
         traffic_tensor = torch.tensor(traffic_np, dtype=torch.float32)
 
-        # Apply SNR mixing
-        p_siren = torch.mean(siren_tensor ** 2) + 1e-8
+        # 1. Normalize background traffic noise to a constant, steady baseline volume (peak 0.45)
+        traffic_tensor = (traffic_tensor / (torch.max(torch.abs(traffic_tensor)) + 1e-6)) * 0.45
+
+        # 2. Calculate siren power ONLY over active non-zero frames (prevents zero-padding from distorting power)
+        active_mask = torch.abs(siren_tensor) > 1e-4
+        if torch.any(active_mask):
+            p_siren = torch.mean(siren_tensor[active_mask] ** 2) + 1e-8
+        else:
+            p_siren = torch.mean(siren_tensor ** 2) + 1e-8
+
         p_traffic = torch.mean(traffic_tensor ** 2) + 1e-8
         target_siren_power = p_traffic * (10.0 ** (snr_db / 10.0))
         scale = torch.sqrt(target_siren_power / p_siren)
 
         clean_siren_wave = siren_tensor * scale
-        traffic_wave = traffic_tensor
+        traffic_wave = traffic_tensor  # Background traffic baseline remains 100% constant!
         mix_wave = traffic_wave + clean_siren_wave
 
-        # Normalize to prevent audio clipping
-        max_val = torch.max(torch.abs(mix_wave))
-        if max_val > 1.0:
-            mix_wave = mix_wave / max_val
-            clean_siren_wave = clean_siren_wave / max_val
-            traffic_wave = traffic_wave / max_val
+        # Soft clip mixture if peak exceeds 1.0 to prevent hard digital clipping without ducking traffic noise
+        max_mix = torch.max(torch.abs(mix_wave))
+        if max_mix > 1.0:
+            mix_wave = torch.tanh(mix_wave)
 
     # Real-Time Sliding Window Detector & Overlap-Add Separation Engine
     detection_res = detector.process_stream(mix_wave, device=device)
