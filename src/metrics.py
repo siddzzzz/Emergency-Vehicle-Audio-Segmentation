@@ -40,30 +40,33 @@ def calculate_si_sdr(estimated, target, zero_mean=True, eps=1e-8):
 
 class AudioSeparationLoss(nn.Module):
     """
-    Combined Loss Function for Audio Source Separation:
+    Combined Loss Function for Multi-Task Audio Source Separation & Vehicle Classification:
     1. L1 Spectral Magnitude Loss (STFT Domain)
-    2. Optional Time-Domain Waveform Loss / SI-SDR Loss
+    2. SI-SDR Time-Domain Loss
+    3. Multi-Class Cross Entropy Loss
     """
-    def __init__(self, spectral_weight=1.0, wave_weight=0.1):
+    def __init__(self, spectral_weight=1.0, wave_weight=0.05, cls_weight=0.5):
         super().__init__()
         self.spectral_weight = spectral_weight
         self.wave_weight = wave_weight
+        self.cls_weight = cls_weight
         self.l1_loss = nn.L1Loss()
+        self.ce_loss = nn.CrossEntropyLoss()
 
-    def forward(self, est_mag, target_mag, est_wave=None, target_wave=None):
+    def forward(self, est_mag, target_mag, est_wave=None, target_wave=None, class_logits=None, target_class=None):
         spec_loss = self.l1_loss(est_mag, target_mag)
-        
         total_loss = self.spectral_weight * spec_loss
         
+        if class_logits is not None and target_class is not None:
+            cls_loss = self.ce_loss(class_logits, target_class)
+            total_loss = total_loss + self.cls_weight * cls_loss
+
         if est_wave is not None and target_wave is not None:
-            # Min-max size alignment
             min_len = min(est_wave.shape[-1], target_wave.shape[-1])
             est_w = est_wave[..., :min_len]
             tgt_w = target_wave[..., :min_len]
             
-            # Convert SI-SDR maximization to loss minimization
             sdr_val = calculate_si_sdr(est_w, tgt_w)
-            # Clip SDR loss to prevent extreme gradient spikes early in training
             sdr_loss = -torch.clamp(sdr_val, min=-30.0, max=30.0)
             total_loss = total_loss + self.wave_weight * sdr_loss
 
