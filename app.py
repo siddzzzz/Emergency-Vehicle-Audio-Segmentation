@@ -47,11 +47,11 @@ else:
 detector = SlidingWindowDetector(model, processor, window_sec=4.0, hop_sec=0.5, sample_rate=SAMPLE_RATE)
 
 
-def plot_detection_dashboard(mix_wave_np, time_points, confidence_curve, detected_intervals, mix_mag, mask, siren_pred_mag, clean_siren_mag=None):
+def plot_detection_dashboard(mix_wave_np, time_points, confidence_curve, class_probs_history, detected_intervals, mix_mag, mask, siren_pred_mag, clean_siren_mag=None):
     """
     Generates a 5-Subplot Visualizer Dashboard:
     1. 1D Mixed Waveform Timeline with Red Highlighted Emergency Siren Intervals
-    2. Real-Time Siren Detection Confidence Curve (0% to 100%)
+    2. Multi-Class Emergency Vehicle Classification Probabilities (%) over Time
     3. Mixed Input Spectrogram
     4. Predicted U-Net Ratio Mask M(f, t)
     5. Extracted Siren Spectrogram
@@ -75,18 +75,27 @@ def plot_detection_dashboard(mix_wave_np, time_points, confidence_curve, detecte
     ax_wave.grid(True, linestyle="--", alpha=0.5)
     ax_wave.legend(loc="upper right")
 
-    # --- Subplot 2: Real-Time Siren Confidence / Detection Score Curve ---
+    # --- Subplot 2: Multi-Class Emergency Vehicle Classifier Probabilities ---
     ax_conf = fig.add_subplot(gs[0, 2:])
-    ax_conf.plot(time_points, confidence_curve, color="#dc2626", linewidth=2.5, marker="o", markersize=4, label="Siren Detection Score")
-    ax_conf.axhline(detector.detection_threshold * 100.0, color="#f59e0b", linestyle="--", linewidth=1.5, label="Detection Threshold (18%)")
+    if class_probs_history is not None and len(class_probs_history) > 0:
+        # Multiply by 100 for percentages
+        probs_pct = class_probs_history * 100.0
+        ax_conf.plot(time_points, probs_pct[:, 1], color="#dc2626", linewidth=2.0, marker="o", markersize=4, label="Ambulance (Wail)")
+        ax_conf.plot(time_points, probs_pct[:, 2], color="#2563eb", linewidth=2.0, marker="s", markersize=4, label="Police (Yelp)")
+        ax_conf.plot(time_points, probs_pct[:, 3], color="#d97706", linewidth=2.0, marker="^", markersize=4, label="Firetruck (Hi-Lo)")
+        ax_conf.plot(time_points, probs_pct[:, 0], color="#6b7280", linewidth=1.5, linestyle="--", label="Traffic Only")
+    else:
+        ax_conf.plot(time_points, confidence_curve, color="#dc2626", linewidth=2.5, marker="o", markersize=4, label="Siren Confidence")
     
-    ax_conf.set_title("2. Real-Time Siren Detection Confidence Score (%)", fontsize=11, fontweight="bold")
+    ax_conf.axhline(detector.detection_threshold * 100.0, color="#f59e0b", linestyle=":", linewidth=1.5, label="Detection Threshold (18%)")
+    
+    ax_conf.set_title("2. Multi-Class Emergency Vehicle Classifier Probabilities (%)", fontsize=11, fontweight="bold")
     ax_conf.set_xlabel("Time (seconds)")
-    ax_conf.set_ylabel("Confidence (%)")
-    ax_conf.set_ylim(0, 100)
+    ax_conf.set_ylabel("Probability (%)")
+    ax_conf.set_ylim(0, 105)
     ax_conf.set_xlim(0, len(mix_wave_np) / SAMPLE_RATE)
     ax_conf.grid(True, linestyle="--", alpha=0.5)
-    ax_conf.legend(loc="upper right")
+    ax_conf.legend(loc="upper right", fontsize=8)
 
     # --- Subplots 3, 4, 5: Spectrograms & Learned Ratio Mask ---
     eps = 1e-6
@@ -225,6 +234,7 @@ def process_audio_separation_and_detection(siren_type, noise_type, snr_db, start
     full_est_siren_wave = detection_res["full_separated_wave"]
     time_points = detection_res["time_points"]
     confidence_curve = detection_res["confidence_curve"]
+    class_probs_history = detection_res["class_probs_history"]
     detected_intervals = detection_res["detected_intervals"]
     traffic_action_msg = detection_res["traffic_action"]
 
@@ -255,7 +265,7 @@ def process_audio_separation_and_detection(siren_type, noise_type, snr_db, start
     mix_mag_input = mix_mag.unsqueeze(0).to(device)
 
     with torch.no_grad():
-        mask_tensor, pred_mag_tensor = model(mix_mag_input)
+        mask_tensor, pred_mag_tensor, class_logits = model(mix_mag_input)
 
     mask_np = mask_tensor.squeeze().cpu().numpy()
     pred_mag_np = pred_mag_tensor.squeeze().cpu().numpy()
@@ -265,6 +275,7 @@ def process_audio_separation_and_detection(siren_type, noise_type, snr_db, start
         mix_np,
         time_points,
         confidence_curve,
+        class_probs_history,
         detected_intervals,
         mix_mag_np,
         mask_np,
