@@ -95,10 +95,20 @@ class EmergencyAudioDataset(Dataset):
         self.traffic_files = list((self.data_dir / "traffic").glob("*.wav")) if (self.data_dir / "traffic").exists() else []
 
     def _load_or_generate_audio(self, file_list, gen_type="siren"):
+        class_id = 0  # 0 = Traffic Only
         if file_list:
             filepath = random.choice(file_list)
+            filename = filepath.name.lower()
+            if "wail" in filename:
+                class_id = 1
+            elif "yelp" in filename:
+                class_id = 2
+            elif "hilo" in filename:
+                class_id = 3
+            else:
+                class_id = 1
+
             sr, audio_np = wavfile.read(str(filepath))
-            # Convert to float32 [-1.0, 1.0]
             if audio_np.dtype == np.int16:
                 audio_np = audio_np.astype(np.float32) / 32768.0
             elif audio_np.dtype == np.int32:
@@ -107,7 +117,7 @@ class EmergencyAudioDataset(Dataset):
                 audio_np = audio_np.astype(np.float32)
                 
             if audio_np.ndim > 1:
-                audio_np = audio_np.mean(axis=1)  # Mono
+                audio_np = audio_np.mean(axis=1)
                 
             waveform = torch.tensor(audio_np, dtype=torch.float32)
             
@@ -117,15 +127,24 @@ class EmergencyAudioDataset(Dataset):
             elif waveform.size(0) > self.num_samples:
                 start = random.randint(0, waveform.size(0) - self.num_samples)
                 waveform = waveform[start:start + self.num_samples]
-            return waveform
+            return waveform, class_id
         else:
             if gen_type == "siren":
-                gen_fn = random.choice([generate_siren_wail, generate_siren_yelp, generate_siren_hilo])
-                audio = gen_fn(duration_sec=4.0, sample_rate=self.sample_rate)
+                choice = random.choice(["wail", "yelp", "hilo"])
+                if choice == "wail":
+                    audio = generate_siren_wail(duration_sec=self.duration_sec, sample_rate=self.sample_rate)
+                    class_id = 1
+                elif choice == "yelp":
+                    audio = generate_siren_yelp(duration_sec=self.duration_sec, sample_rate=self.sample_rate)
+                    class_id = 2
+                else:
+                    audio = generate_siren_hilo(duration_sec=self.duration_sec, sample_rate=self.sample_rate)
+                    class_id = 3
             else:
                 n_type = "horns" if random.random() > 0.5 else "rumble"
-                audio = generate_traffic_noise(duration_sec=4.0, sample_rate=self.sample_rate, noise_type=n_type)
-            return torch.tensor(audio, dtype=torch.float32)
+                audio = generate_traffic_noise(duration_sec=self.duration_sec, sample_rate=self.sample_rate, noise_type=n_type)
+                class_id = 0
+            return torch.tensor(audio, dtype=torch.float32), class_id
 
     def mix_audio(self, siren, traffic, snr_db):
         """
@@ -133,7 +152,6 @@ class EmergencyAudioDataset(Dataset):
         Calculates siren power over active frames only so zero-padding doesn't distort scaling,
         and keeps background traffic baseline constant without ducking.
         """
-        # Normalize traffic to steady baseline
         traffic = (traffic / (torch.max(torch.abs(traffic)) + 1e-6)) * 0.45
 
         active_mask = torch.abs(siren) > 1e-4
@@ -159,9 +177,14 @@ class EmergencyAudioDataset(Dataset):
         return self.dataset_size
 
     def __getitem__(self, idx):
-        siren_raw = self._load_or_generate_audio(self.siren_files, gen_type="siren")
-        traffic_raw = self._load_or_generate_audio(self.traffic_files, gen_type="traffic")
+        siren_raw, siren_class = self._load_or_generate_audio(self.siren_files, gen_type="siren")
+        traffic_raw, _ = self._load_or_generate_audio(self.traffic_files, gen_type="traffic")
         
+        # 10% chance of pure traffic noise (No siren)
+        if random.random() < 0.10:
+            siren_raw = torch.zeros_like(siren_raw)
+            siren_class = 0
+
         snr_db = random.uniform(self.snr_range[0], self.snr_range[1])
         mixture_wave, clean_siren_wave = self.mix_audio(siren_raw, traffic_raw, snr_db)
 
@@ -175,7 +198,8 @@ class EmergencyAudioDataset(Dataset):
             "siren_mag": siren_mag,         # Tensor (1, Freq, Time)
             "mix_wave": mixture_wave,       # Waveform (Time,)
             "siren_wave": clean_siren_wave,  # Waveform (Time,)
-            "snr_db": torch.tensor(snr_db, dtype=torch.float32)
+            "snr_db": torch.tensor(snr_db, dtype=torch.float32),
+            "class_id": torch.tensor(siren_class, dtype=torch.long)  # 0=Traffic, 1=Wail, 2=Yelp, 3=Hi-Lo
         }
 
 
