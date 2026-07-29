@@ -76,11 +76,12 @@ def train_model(
         for step, batch in enumerate(loop):
             mix_mag = batch["mix_mag"].to(device)
             siren_mag = batch["siren_mag"].to(device)
+            class_id = batch["class_id"].to(device)
 
             optimizer.zero_grad()
-            mask, est_mag = model(mix_mag)
+            mask, est_mag, class_logits = model(mix_mag)
 
-            loss = criterion(est_mag, siren_mag)
+            loss = criterion(est_mag, siren_mag, class_logits=class_logits, target_class=class_id)
             loss.backward()
             optimizer.step()
 
@@ -105,9 +106,10 @@ def train_model(
                 mix_phase = batch["mix_phase"].to(device)
                 siren_mag = batch["siren_mag"].to(device)
                 siren_wave = batch["siren_wave"].to(device)
+                class_id = batch["class_id"].to(device)
 
-                mask, est_mag = model(mix_mag)
-                loss = criterion(est_mag, siren_mag)
+                mask, est_mag, class_logits = model(mix_mag)
+                loss = criterion(est_mag, siren_mag, class_logits=class_logits, target_class=class_id)
                 val_loss += loss.item()
 
                 # Reconstruct estimated wave to evaluate SI-SDR metric
