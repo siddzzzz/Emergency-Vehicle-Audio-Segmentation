@@ -20,29 +20,24 @@ class SlidingWindowDetector:
         self.window_size = int(window_sec * sample_rate)
         self.hop_size = int(hop_sec * sample_rate)
 
-    def process_stream(self, mix_waveform, device="cpu"):
+    def process_stream(self, mic1_waveform, mic2_waveform=None, spatial_engine=None, device="cpu"):
         """
         Args:
-            mix_waveform: 1D PyTorch tensor or NumPy array of raw mixed audio waveform (any length)
+            mic1_waveform: 1D tensor or array of raw mixed audio at Microphone 1
+            mic2_waveform: Optional 1D tensor or array at Microphone 2 (for 2-mic DoA estimation)
+            spatial_engine: Optional SpatialAudioEngine instance for GCC-PHAT DoA estimation
             device: 'cpu' or 'cuda'
-        Returns:
-            dict containing:
-                - full_separated_wave: Reconstructed 1D separated siren waveform
-                - time_points: Array of timestamp centers in seconds
-                - confidence_curve: Array of siren energy/confidence percentages (0 to 100%)
-                - detected_intervals: List of (start_sec, end_sec) tuples
-                - traffic_action: Traffic signal decision string
         """
-        if isinstance(mix_waveform, np.ndarray):
-            mix_waveform = torch.tensor(mix_waveform, dtype=torch.float32)
+        if isinstance(mic1_waveform, np.ndarray):
+            mic1_waveform = torch.tensor(mic1_waveform, dtype=torch.float32)
 
-        total_samples = mix_waveform.size(0)
+        total_samples = mic1_waveform.size(0)
         
         # If total audio is shorter than window_size, pad it
         if total_samples < self.window_size:
             pad_len = self.window_size - total_samples
-            mix_waveform = F.pad(mix_waveform, (0, pad_len))
-            total_samples = mix_waveform.size(0)
+            mic1_waveform = F.pad(mic1_waveform, (0, pad_len))
+            total_samples = mic1_waveform.size(0)
 
         # OLA Accumulators
         reconstructed_wave = torch.zeros(total_samples, dtype=torch.float32)
@@ -65,7 +60,7 @@ class SlidingWindowDetector:
                 if end_idx > total_samples:
                     break
 
-                win_audio = mix_waveform[start_idx:end_idx]
+                win_audio = mic1_waveform[start_idx:end_idx]
                 win_mag, win_phase = self.processor.stft(win_audio)
                 win_mag_input = win_mag.unsqueeze(0).to(device)
 
@@ -138,10 +133,18 @@ class SlidingWindowDetector:
                 top_class_id = int(np.argmax(siren_probs)) + 1
                 top_vehicle_name = CLASS_NAMES[top_class_id]
 
+        # Spatial DoA Estimation (if Mic 2 input is available)
+        estimated_angle = 0.0
+        target_lane = "Lane 1 (Northbound Center)"
+        if mic2_waveform is not None and spatial_engine is not None:
+            m1_np = mic1_waveform.cpu().numpy()
+            m2_np = mic2_waveform.cpu().numpy() if isinstance(mic2_waveform, torch.Tensor) else mic2_waveform
+            estimated_angle, target_lane, _ = spatial_engine.estimate_doa_gcc_phat(m1_np, m2_np)
+
         # Traffic Signal Decision logic
         if detected_intervals:
             interval_str = ", ".join([f"{s}s–{e}s" for s, e in detected_intervals])
-            traffic_action = f"[EMERGENCY PRIORITY ACTIVATED] Detected {top_vehicle_name} in interval(s) [{interval_str}]. OVERRIDE SIGNAL TO GREEN FOR APPROACHING {top_vehicle_name.upper()}!"
+            traffic_action = f"[EMERGENCY PRIORITY ACTIVATED] Detected {top_vehicle_name} approaching from {target_lane} (Angle: {estimated_angle:+.1f}°) in interval [{interval_str}]. OVERRIDE {target_lane.upper()} SIGNAL TO GREEN!"
         else:
             traffic_action = "[NORMAL TRAFFIC FLOW] No emergency sirens detected. Maintain regular automated traffic light cycle."
 
@@ -152,5 +155,7 @@ class SlidingWindowDetector:
             "class_probs_history": class_probs_history,
             "top_vehicle_name": top_vehicle_name,
             "detected_intervals": detected_intervals,
+            "estimated_angle": estimated_angle,
+            "target_lane": target_lane,
             "traffic_action": traffic_action
         }
