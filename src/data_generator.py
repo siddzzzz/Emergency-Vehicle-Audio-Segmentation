@@ -11,6 +11,63 @@ SIREN_DIR = DATA_DIR / "sirens"
 TRAFFIC_DIR = DATA_DIR / "traffic"
 
 
+def apply_doppler_effect(signal, sample_rate=16000, duration_sec=10.0, vehicle_speed_kmh=60.0, closest_approach_sec=5.0, min_distance_m=10.0):
+    """
+    Applies physical Doppler pitch shift and inverse distance volume gain to siren audio as vehicle moves.
+    
+    Args:
+        signal: 1D NumPy array of siren audio
+        sample_rate: 16000 Hz
+        duration_sec: Total duration in seconds (10.0s)
+        vehicle_speed_kmh: Vehicle speed in km/h (e.g. 60 km/h = 16.67 m/s)
+        closest_approach_sec: Time in seconds when vehicle is closest to junction (5.0s)
+        min_distance_m: Closest approach distance to microphone array in meters (10.0m)
+    """
+    if vehicle_speed_kmh <= 0.0:
+        return signal
+
+    v_sound = 343.0  # Speed of sound in m/s
+    v_speed = vehicle_speed_kmh * (1000.0 / 3600.0)  # Convert km/h to m/s
+
+    num_samples = len(signal)
+    t = np.linspace(0, duration_sec, num_samples, endpoint=False)
+
+    # Position x(t) relative to closest approach point (x = 0 at closest_approach_sec)
+    x = v_speed * (t - closest_approach_sec)
+    
+    # Distance r(t) from vehicle to microphone array at (0, min_distance_m)
+    r = np.sqrt(x**2 + min_distance_m**2)
+
+    # Distance gain (Inverse Distance Law 1/r) normalized to 1.0 at min_distance_m
+    distance_gain = min_distance_m / r
+
+    # Radial velocity component toward microphone array
+    # v_radial is positive when approaching (moving toward mic), negative when receding
+    v_radial = -v_speed * (x / r)
+
+    # Doppler frequency scaling factor f_observed / f_source = v_sound / (v_sound - v_radial)
+    doppler_factor = v_sound / (v_sound - v_radial + 1e-6)
+
+    # Dynamic time warp: dt_observed = dt_source * doppler_factor
+    # Integrated sample mapping to resample signal continuously
+    integrated_time = np.cumsum(doppler_factor) / sample_rate
+    # Normalize integrated time to span original sample range
+    source_indices = np.interp(
+        t,
+        np.linspace(0, duration_sec, num_samples),
+        integrated_time * (num_samples / (integrated_time[-1] + 1e-8))
+    )
+    source_indices = np.clip(source_indices, 0, num_samples - 1)
+
+    # Interpolate signal values at warped time indices
+    doppler_signal = np.interp(source_indices, np.arange(num_samples), signal)
+
+    # Apply inverse distance volume gain
+    doppler_signal = doppler_signal * distance_gain
+
+    return doppler_signal.astype(np.float32)
+
+
 def apply_burst_envelope(signal, sample_rate, duration_sec, start_sec=None, end_sec=None):
     """
     Applies a smooth cosine fade-in/fade-out envelope so siren starts and stops in the middle of audio.
@@ -23,15 +80,13 @@ def apply_burst_envelope(signal, sample_rate, duration_sec, start_sec=None, end_
 
     start_idx = int(start_sec * sample_rate)
     end_idx = int(end_sec * sample_rate)
-    fade_len = int(0.3 * sample_rate)  # 300ms fade duration
+    fade_len = int(0.3 * sample_rate)
 
     envelope = np.zeros(num_samples, dtype=np.float32)
     active_len = max(0, end_idx - start_idx)
 
     if active_len > 2 * fade_len:
-        # Cosine fade-in
         fade_in = 0.5 * (1.0 - np.cos(np.pi * np.linspace(0, 1, fade_len)))
-        # Cosine fade-out
         fade_out = 0.5 * (1.0 + np.cos(np.pi * np.linspace(0, 1, fade_len)))
         
         envelope[start_idx:start_idx + fade_len] = fade_in
@@ -43,10 +98,9 @@ def apply_burst_envelope(signal, sample_rate, duration_sec, start_sec=None, end_
     return (signal * envelope).astype(np.float32)
 
 
-def generate_siren_wail(duration_sec=10.0, sample_rate=16000, start_sec=None, end_sec=None):
+def generate_siren_wail(duration_sec=10.0, sample_rate=16000, start_sec=None, end_sec=None, vehicle_speed_kmh=0.0, closest_approach_sec=5.0):
     """
-    Synthesize an Ambulance/Police Wail Siren:
-    Frequency modulation between ~600 Hz and ~1300 Hz.
+    Synthesize an Ambulance/Police Wail Siren with optional Doppler pitch shift and burst envelope.
     """
     num_samples = int(sample_rate * duration_sec)
     t = np.linspace(0, duration_sec, num_samples, endpoint=False)
@@ -59,16 +113,18 @@ def generate_siren_wail(duration_sec=10.0, sample_rate=16000, start_sec=None, en
     signal = 0.7 * np.sin(phase) + 0.2 * np.sin(2 * phase)
     signal = (signal / np.max(np.abs(signal))).astype(np.float32)
 
+    if vehicle_speed_kmh > 0.0:
+        signal = apply_doppler_effect(signal, sample_rate, duration_sec, vehicle_speed_kmh, closest_approach_sec)
+
     if start_sec is not None or end_sec is not None or duration_sec > 5.0:
         signal = apply_burst_envelope(signal, sample_rate, duration_sec, start_sec, end_sec)
 
     return signal
 
 
-def generate_siren_yelp(duration_sec=10.0, sample_rate=16000, start_sec=None, end_sec=None):
+def generate_siren_yelp(duration_sec=10.0, sample_rate=16000, start_sec=None, end_sec=None, vehicle_speed_kmh=0.0, closest_approach_sec=5.0):
     """
-    Synthesize a Yelp Siren:
-    Fast frequency modulation between ~650 Hz and ~1450 Hz.
+    Synthesize a Yelp Siren with optional Doppler pitch shift and burst envelope.
     """
     num_samples = int(sample_rate * duration_sec)
     t = np.linspace(0, duration_sec, num_samples, endpoint=False)
@@ -81,16 +137,18 @@ def generate_siren_yelp(duration_sec=10.0, sample_rate=16000, start_sec=None, en
     signal = 0.8 * np.sin(phase) + 0.15 * np.sin(2 * phase)
     signal = (signal / np.max(np.abs(signal))).astype(np.float32)
 
+    if vehicle_speed_kmh > 0.0:
+        signal = apply_doppler_effect(signal, sample_rate, duration_sec, vehicle_speed_kmh, closest_approach_sec)
+
     if start_sec is not None or end_sec is not None or duration_sec > 5.0:
         signal = apply_burst_envelope(signal, sample_rate, duration_sec, start_sec, end_sec)
 
     return signal
 
 
-def generate_siren_hilo(duration_sec=10.0, sample_rate=16000, start_sec=None, end_sec=None):
+def generate_siren_hilo(duration_sec=10.0, sample_rate=16000, start_sec=None, end_sec=None, vehicle_speed_kmh=0.0, closest_approach_sec=5.0):
     """
-    Synthesize a European / Firetruck Hi-Lo Siren:
-    Alternating high (900 Hz) and low (700 Hz) tones.
+    Synthesize a European / Firetruck Hi-Lo Siren with optional Doppler pitch shift and burst envelope.
     """
     num_samples = int(sample_rate * duration_sec)
     t = np.linspace(0, duration_sec, num_samples, endpoint=False)
@@ -100,6 +158,9 @@ def generate_siren_hilo(duration_sec=10.0, sample_rate=16000, start_sec=None, en
     
     signal = 0.75 * np.sin(phase) + 0.2 * np.sin(3 * phase)
     signal = (signal / np.max(np.abs(signal))).astype(np.float32)
+
+    if vehicle_speed_kmh > 0.0:
+        signal = apply_doppler_effect(signal, sample_rate, duration_sec, vehicle_speed_kmh, closest_approach_sec)
 
     if start_sec is not None or end_sec is not None or duration_sec > 5.0:
         signal = apply_burst_envelope(signal, sample_rate, duration_sec, start_sec, end_sec)
@@ -128,7 +189,6 @@ def generate_traffic_noise(duration_sec=10.0, sample_rate=16000, noise_type="rum
     traffic_sound = pink_noise * engine_mod
     
     if noise_type == "horns":
-        # Add car horn bursts at random intervals
         for h_start_ratio in [0.2, 0.6]:
             horn_start = int(h_start_ratio * num_samples)
             horn_len = int(0.5 * sample_rate)
@@ -156,7 +216,8 @@ def generate_sample_dataset(num_samples=10, sample_rate=16000, duration_sec=10.0
         s_name, s_gen = siren_generators[i % len(siren_generators)]
         start_s = round(1.0 + (i % 3) * 1.5, 1)
         end_s = round(start_s + 4.0, 1)
-        s_audio = s_gen(duration_sec=duration_sec, sample_rate=sample_rate, start_sec=start_s, end_sec=end_s)
+        speed = round(40.0 + (i % 4) * 15.0, 1)
+        s_audio = s_gen(duration_sec=duration_sec, sample_rate=sample_rate, start_sec=start_s, end_sec=end_s, vehicle_speed_kmh=speed)
         file_path = SIREN_DIR / f"siren_{s_name}_{i+1:02d}.wav"
         wavfile.write(str(file_path), sample_rate, (s_audio * 32767).astype(np.int16))
     

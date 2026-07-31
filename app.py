@@ -175,10 +175,10 @@ def safe_extract_filepath(file_obj):
     return str(file_obj)
 
 
-def process_audio_separation_and_detection(siren_type, noise_type, snr_db, start_sec, end_sec, angle_deg, custom_audio_file=None):
+def process_audio_separation_and_detection(siren_type, noise_type, snr_db, start_sec, end_sec, angle_deg, vehicle_speed_kmh=60.0, closest_approach_sec=5.0, custom_audio_file=None):
     """
     Gradio Event Handler:
-    1. Synthesizes siren burst + background traffic noise.
+    1. Synthesizes siren burst + Doppler pitch shift + distance volume gain + background traffic noise.
     2. Simulates 2-microphone array spatial stereo audio at traffic junction for target angle.
     3. Runs Sliding Window AI Detector + GCC-PHAT DoA Angle Estimator.
     4. Emits lane-specific traffic light priority signal override.
@@ -210,13 +210,22 @@ def process_audio_separation_and_detection(siren_type, noise_type, snr_db, start
         mix_wave_mic1 = torch.tensor(audio_np, dtype=torch.float32)
         mix_wave_mic2 = mix_wave_mic1
     else:
-        # Generate 10-second siren burst
+        # Generate 10-second siren burst with Doppler Effect
         if siren_type == "Wail (Ambulance)":
-            siren_np = generate_siren_wail(duration_sec=duration, sample_rate=SAMPLE_RATE, start_sec=start_sec, end_sec=end_sec)
+            siren_np = generate_siren_wail(
+                duration_sec=duration, sample_rate=SAMPLE_RATE, start_sec=start_sec, end_sec=end_sec,
+                vehicle_speed_kmh=vehicle_speed_kmh, closest_approach_sec=closest_approach_sec
+            )
         elif siren_type == "Yelp (Police)":
-            siren_np = generate_siren_yelp(duration_sec=duration, sample_rate=SAMPLE_RATE, start_sec=start_sec, end_sec=end_sec)
+            siren_np = generate_siren_yelp(
+                duration_sec=duration, sample_rate=SAMPLE_RATE, start_sec=start_sec, end_sec=end_sec,
+                vehicle_speed_kmh=vehicle_speed_kmh, closest_approach_sec=closest_approach_sec
+            )
         else:
-            siren_np = generate_siren_hilo(duration_sec=duration, sample_rate=SAMPLE_RATE, start_sec=start_sec, end_sec=end_sec)
+            siren_np = generate_siren_hilo(
+                duration_sec=duration, sample_rate=SAMPLE_RATE, start_sec=start_sec, end_sec=end_sec,
+                vehicle_speed_kmh=vehicle_speed_kmh, closest_approach_sec=closest_approach_sec
+            )
 
         # Generate 10-second background traffic noise
         traffic_np = generate_traffic_noise(
@@ -373,7 +382,25 @@ def launch_app():
                         info="Lower dB = Traffic is louder than siren"
                     )
                     
-                    gr.Markdown("#### 📍 2. Approaching Vehicle Angle & Lane Direction")
+                    gr.Markdown("#### 🏎️ 2. Doppler Pitch Shift & Physical Dynamics")
+                    speed_slider = gr.Slider(
+                        minimum=0.0,
+                        maximum=100.0,
+                        value=60.0,
+                        step=5.0,
+                        label="Vehicle Approaching Speed (km/h)",
+                        info="0 = Stationary | 60 km/h = Pitch shifts higher when approaching and drops as it passes"
+                    )
+                    closest_time_slider = gr.Slider(
+                        minimum=1.0,
+                        maximum=9.0,
+                        value=5.0,
+                        step=0.5,
+                        label="Closest Approach Time (Seconds)",
+                        info="Time when vehicle passes closest to traffic junction"
+                    )
+
+                    gr.Markdown("#### 📍 3. Approaching Vehicle Angle & Lane Direction")
                     angle_slider = gr.Slider(
                         minimum=-60.0,
                         maximum=60.0,
@@ -383,7 +410,7 @@ def launch_app():
                         info="0° = Lane 1 (North), +45° = Lane 2 (East Right), -45° = Lane 3 (West Left)"
                     )
 
-                    gr.Markdown("#### ⏱️ 3. Siren Active Burst Window")
+                    gr.Markdown("#### ⏱️ 4. Siren Active Burst Window")
                     siren_start_slider = gr.Slider(
                         minimum=0.0,
                         maximum=6.0,
@@ -421,7 +448,7 @@ def launch_app():
 
             separate_btn.click(
                 fn=process_audio_separation_and_detection,
-                inputs=[siren_type, noise_type, snr_slider, siren_start_slider, siren_end_slider, angle_slider, custom_file],
+                inputs=[siren_type, noise_type, snr_slider, siren_start_slider, siren_end_slider, angle_slider, speed_slider, closest_time_slider, custom_file],
                 outputs=[audio_mix, audio_separated, audio_gt_siren, audio_traffic, spec_plot, status_banner]
             )
 
