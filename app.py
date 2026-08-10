@@ -227,11 +227,27 @@ def process_audio_separation_and_detection(siren_type, noise_type, snr_db, start
                 vehicle_speed_kmh=vehicle_speed_kmh, closest_approach_sec=closest_approach_sec
             )
 
-        # Generate 10-second background traffic noise
+        # Map UI noise choice to generator noise type key
+        if noise_type == "Heavy Rain Storm":
+            n_type = "rain"
+        elif noise_type == "High Wind Gusts":
+            n_type = "wind"
+        elif noise_type == "Diesel Truck Air Brakes":
+            n_type = "brakes"
+        elif noise_type == "Urban Construction Site":
+            n_type = "construction"
+        elif noise_type == "Harsh Storm (Rain + Wind + Traffic)":
+            n_type = "storm"
+        elif noise_type == "Traffic + Horns":
+            n_type = "horns"
+        else:
+            n_type = "rumble"
+
+        # Generate 10-second background environmental noise
         traffic_np = generate_traffic_noise(
             duration_sec=duration,
             sample_rate=SAMPLE_RATE,
-            noise_type="horns" if noise_type == "Traffic + Horns" else "rumble"
+            noise_type=n_type
         )
 
         siren_tensor = torch.tensor(siren_np, dtype=torch.float32)
@@ -369,9 +385,17 @@ def launch_app():
                         label="Emergency Siren Type"
                     )
                     noise_type = gr.Dropdown(
-                        choices=["Heavy Traffic Rumble", "Traffic + Horns"],
+                        choices=[
+                            "Heavy Traffic Rumble",
+                            "Traffic + Horns",
+                            "Heavy Rain Storm",
+                            "High Wind Gusts",
+                            "Diesel Truck Air Brakes",
+                            "Urban Construction Site",
+                            "Harsh Storm (Rain + Wind + Traffic)"
+                        ],
                         value="Traffic + Horns",
-                        label="Background Traffic Noise"
+                        label="Background Acoustic Environment"
                     )
                     snr_slider = gr.Slider(
                         minimum=-12.0,

@@ -170,13 +170,21 @@ def generate_siren_hilo(duration_sec=10.0, sample_rate=16000, start_sec=None, en
 
 def generate_traffic_noise(duration_sec=10.0, sample_rate=16000, noise_type="rumble"):
     """
-    Synthesize continuous background traffic noise for given duration.
+    Synthesize continuous background environmental noise for given duration:
+    - rumble: Heavy Traffic Engine Rumble
+    - horns: Traffic + Car Horn Bursts
+    - rain: Heavy Rain Storm & Windshield Patter
+    - wind: Low Frequency Wind Gust Buffeting
+    - brakes: Diesel Truck Pneumatic Air Brakes
+    - construction: Jackhammer & Construction Percussion
+    - storm: Combined Storm (Rain + Wind + Traffic)
     """
     num_samples = int(sample_rate * duration_sec)
     t = np.linspace(0, duration_sec, num_samples, endpoint=False)
-    
-    unequal_noise = np.random.randn(num_samples)
-    fft_noise = np.fft.rfft(unequal_noise)
+
+    # Base Pink Noise Engine Rumble
+    white_noise = np.random.randn(num_samples)
+    fft_noise = np.fft.rfft(white_noise)
     frequencies = np.fft.rfftfreq(num_samples, 1 / sample_rate)
     frequencies[0] = 1.0
     pink_filter = 1 / np.sqrt(frequencies)
@@ -184,18 +192,64 @@ def generate_traffic_noise(duration_sec=10.0, sample_rate=16000, noise_type="rum
     
     pink_fft = fft_noise * pink_filter
     pink_noise = np.fft.irfft(pink_fft, n=num_samples)
-    
-    engine_mod = 0.5 + 0.5 * np.sin(2 * np.pi * 0.2 * t + np.random.rand() * 2 * np.pi)
-    traffic_sound = pink_noise * engine_mod
-    
-    if noise_type == "horns":
-        for h_start_ratio in [0.2, 0.6]:
-            horn_start = int(h_start_ratio * num_samples)
-            horn_len = int(0.5 * sample_rate)
-            if horn_start + horn_len < num_samples:
-                t_horn = t[horn_start:horn_start + horn_len]
-                horn = 0.35 * (np.sin(2 * np.pi * 440 * t_horn) + np.sin(2 * np.pi * 554 * t_horn))
-                traffic_sound[horn_start:horn_start + horn_len] += horn
+
+    if noise_type == "rain":
+        # High frequency patter (white noise filtered above 1.5 kHz) + low thunder rumbles
+        rain_filter = np.where(frequencies > 1500.0, 1.0, 0.2)
+        rain_fft = fft_noise * rain_filter
+        rain_noise = np.fft.irfft(rain_fft, n=num_samples)
+        # Thunder rumble at 3.0s and 7.5s
+        thunder = np.exp(-((t - 3.5) ** 2) / 0.5) * np.sin(2 * np.pi * 50 * t)
+        traffic_sound = 0.8 * rain_noise + 0.5 * thunder
+
+    elif noise_type == "wind":
+        # Low frequency modulated turbulent wind gusts (10 Hz - 200 Hz)
+        wind_filter = np.where((frequencies > 10.0) & (frequencies < 250.0), 1.0, 0.05)
+        wind_fft = fft_noise * wind_filter
+        wind_base = np.fft.irfft(wind_fft, n=num_samples)
+        wind_gusts = 0.5 + 0.5 * np.sin(2 * np.pi * 0.15 * t + np.sin(2 * np.pi * 0.05 * t))
+        traffic_sound = wind_base * wind_gusts * 2.5
+
+    elif noise_type == "brakes":
+        # High pressure pneumatic air brake hiss (2.5 kHz - 6.0 kHz) + diesel idling
+        brake_filter = np.where((frequencies > 2500.0) & (frequencies < 6000.0), 1.0, 0.1)
+        brake_fft = fft_noise * brake_filter
+        hiss = np.fft.irfft(brake_fft, n=num_samples)
+        # Air release bursts at t=2.0s and t=6.5s
+        hiss_envelope = np.exp(-((t - 2.5) ** 2) / 0.2) + np.exp(-((t - 7.0) ** 2) / 0.2)
+        engine_idle = 0.4 * pink_noise * (0.6 + 0.4 * np.sin(2 * np.pi * 0.3 * t))
+        traffic_sound = engine_idle + 1.2 * hiss * hiss_envelope
+
+    elif noise_type == "construction":
+        # Jackhammer periodic percussive impact (15 Hz rate) + metallic resonance
+        hammer_freq = 15.0  # 15 impacts per second
+        impact_env = (np.sin(2 * np.pi * hammer_freq * t) > 0.85).astype(np.float32)
+        impact_noise = pink_noise * impact_env * 1.8
+        resonance = 0.3 * np.sin(2 * np.pi * 850 * t) * impact_env
+        traffic_sound = 0.5 * pink_noise + impact_noise + resonance
+
+    elif noise_type == "storm":
+        # Combined Rain + Wind + Heavy Traffic
+        rain_filter = np.where(frequencies > 1500.0, 1.0, 0.2)
+        rain_noise = np.fft.irfft(fft_noise * rain_filter, n=num_samples)
+        wind_filter = np.where((frequencies > 10.0) & (frequencies < 250.0), 1.0, 0.05)
+        wind_noise = np.fft.irfft(fft_noise * wind_filter, n=num_samples)
+        wind_gusts = 0.5 + 0.5 * np.sin(2 * np.pi * 0.15 * t)
+        traffic_sound = 0.5 * pink_noise + 0.6 * rain_noise + 0.8 * wind_noise * wind_gusts
+
+    else:
+        # Standard Traffic Engine Rumble & Optional Car Horns
+        engine_mod = 0.5 + 0.5 * np.sin(2 * np.pi * 0.2 * t + np.random.rand() * 2 * np.pi)
+        traffic_sound = pink_noise * engine_mod
+        
+        if noise_type == "horns":
+            for h_start_ratio in [0.2, 0.6]:
+                horn_start = int(h_start_ratio * num_samples)
+                horn_len = int(0.5 * sample_rate)
+                if horn_start + horn_len < num_samples:
+                    t_horn = t[horn_start:horn_start + horn_len]
+                    horn = 0.35 * (np.sin(2 * np.pi * 440 * t_horn) + np.sin(2 * np.pi * 554 * t_horn))
+                    traffic_sound[horn_start:horn_start + horn_len] += horn
 
     traffic_sound = traffic_sound / (np.max(np.abs(traffic_sound)) + 1e-6)
     return traffic_sound.astype(np.float32)
