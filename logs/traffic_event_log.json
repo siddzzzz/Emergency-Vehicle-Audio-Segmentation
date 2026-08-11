@@ -1,0 +1,24 @@
+[
+  {
+    "event_id": "event_20260811_130655",
+    "timestamp": "2026-08-11T13:06:55",
+    "stream_duration_sec": 10.0,
+    "siren_detected": true,
+    "vehicle_type": "Police (Yelp)",
+    "detected_intervals_sec": [
+      [
+        1.0,
+        10.0
+      ]
+    ],
+    "target_angle_deg": 45.0,
+    "estimated_angle_deg": -20.0,
+    "angle_error_deg": 65.0,
+    "target_traffic_lane": "Lane 3 (Westbound Left)",
+    "traffic_signal_action": "[EMERGENCY PRIORITY ACTIVATED] Detected Police (Yelp) approaching from Lane 3 (Westbound Left) (Angle: -20.0\u00b0) in interval [1.0s\u201310.0s]. OVERRIDE LANE 3 (WESTBOUND LEFT) SIGNAL TO GREEN!",
+    "snr_db": 0.0,
+    "vehicle_speed_kmh": 60.0,
+    "siren_type_input": "Wail (Ambulance)",
+    "noise_environment": "Traffic + Horns"
+  }
+]

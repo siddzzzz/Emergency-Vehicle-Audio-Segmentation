@@ -1,0 +1,9 @@
+{
+  "device": "cpu",
+  "total_trials": 15,
+  "mean_sdr_improvement_db": 0.68,
+  "classification_accuracy_pct": 46.7,
+  "doa_mean_absolute_angle_error_deg": 31.96,
+  "avg_processing_time_per_10s_stream_sec": 3.014,
+  "real_time_processing_factor_rtf": 3.3
+}

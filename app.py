@@ -19,6 +19,7 @@ from src.dataset import AudioProcessor
 from src.model import SpectrogramUNet
 from src.detector import SlidingWindowDetector
 from src.spatial_audio import SpatialAudioEngine
+from src.logger import TrafficEventLogger
 
 # Relative directory paths
 BASE_DIR = Path(__file__).resolve().parent
@@ -26,7 +27,7 @@ CKPT_PATH = BASE_DIR / "checkpoints" / "best_model.pth"
 TEMP_DIR = BASE_DIR / "temp_audio"
 TEMP_DIR.mkdir(exist_ok=True)
 
-# Initialize Processor, Model, and Spatial Audio Engine
+# Initialize Processor, Model, Spatial Audio Engine, and Traffic Event Logger
 SAMPLE_RATE = 16000
 processor = AudioProcessor(sample_rate=SAMPLE_RATE)
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -44,9 +45,10 @@ if CKPT_PATH.exists():
 else:
     print("Notice: No trained checkpoint found yet. Running with default initialized model.")
 
-# Initialize Sliding Window Detector & Spatial DoA Engine
+# Initialize Sliding Window Detector, Spatial DoA Engine, and Traffic Logger
 detector = SlidingWindowDetector(model, processor, window_sec=4.0, hop_sec=0.5, sample_rate=SAMPLE_RATE)
 spatial_engine = SpatialAudioEngine(mic_distance=0.5, sample_rate=SAMPLE_RATE)
+traffic_logger = TrafficEventLogger()
 
 
 def plot_detection_dashboard(mix_wave_np, time_points, confidence_curve, class_probs_history, detected_intervals, estimated_angle, target_lane, mix_mag, mask, siren_pred_mag, clean_siren_mag=None):
@@ -350,7 +352,14 @@ def process_audio_separation_and_detection(siren_type, noise_type, snr_db, start
         clean_siren_mag_np
     )
 
-    return mix_file, est_file, gt_siren_file, traffic_file, fig, traffic_action_msg
+    # Export structured JSON traffic event log
+    import json
+    log_entry, log_file_path = traffic_logger.log_event(
+        detection_res, siren_type, noise_type, snr_db, vehicle_speed_kmh, angle_deg
+    )
+    json_str = json.dumps(log_entry, indent=2)
+
+    return mix_file, est_file, gt_siren_file, traffic_file, fig, traffic_action_msg, json_str, log_file_path
 
 
 def launch_app():
@@ -463,17 +472,21 @@ def launch_app():
                     status_banner = gr.Markdown("Click **Detect Siren, Lane & Separate Audio** to analyze traffic junction.")
                     spec_plot = gr.Plot(label="Spatial DoA Radar & Spectrogram Dashboard")
 
-            gr.Markdown("### 🔊 3. Full 10-Second Audio Track Playback")
+            gr.Markdown("### 🔊 3. Audio Playback & Structured Traffic Event Log")
             with gr.Row():
                 audio_mix = gr.Audio(label="1. Mixed Input (Mic 1 Junction Stream)", type="filepath")
                 audio_separated = gr.Audio(label="2. Extracted Siren (Model Output)", type="filepath")
                 audio_gt_siren = gr.Audio(label="3. Clean Ground-Truth Siren", type="filepath")
-                audio_traffic = gr.Audio(label="4. Continuous Background Traffic", type="filepath")
+                audio_traffic = gr.Audio(label="4. Continuous Background Noise", type="filepath")
+
+            with gr.Row():
+                json_output = gr.Code(label="📜 Latest Traffic Event JSON Log", language="json")
+                log_download = gr.File(label="📥 Download Traffic Event Log (.json)")
 
             separate_btn.click(
                 fn=process_audio_separation_and_detection,
                 inputs=[siren_type, noise_type, snr_slider, siren_start_slider, siren_end_slider, angle_slider, speed_slider, closest_time_slider, custom_file],
-                outputs=[audio_mix, audio_separated, audio_gt_siren, audio_traffic, spec_plot, status_banner]
+                outputs=[audio_mix, audio_separated, audio_gt_siren, audio_traffic, spec_plot, status_banner, json_output, log_download]
             )
 
         with gr.Tab("📘 Spatial Audio & DoA Architecture Guide"):
